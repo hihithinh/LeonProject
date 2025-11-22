@@ -1,10 +1,28 @@
 import psycopg2
 import configparser
 import time
+import os
+
+def get_config_value(section, key, default=None):
+    """
+    Safely get a value from config file
+    """
+    config = configparser.ConfigParser()
+    # Try reading from current directory first, then from conf directory
+    config_path = 'leon.cfg' if os.path.exists('leon.cfg') else 'conf/leon.cfg'
+    config.read(config_path)
+    
+    try:
+        return config.get(section, key)
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        print(f"Warning: {section}.{key} not found in config")
+        return default
 
 def read_config(section):    
     config = configparser.ConfigParser()
-    config.read('leon.cfg')
+    # Try reading from current directory first, then from conf directory
+    config_path = 'leon.cfg' if os.path.exists('leon.cfg') else 'conf/leon.cfg'
+    config.read(config_path)
     return config[section]
 
 def prewarm_pg(port):
@@ -18,79 +36,59 @@ def prewarm_pg(port):
     start = time.time()
     with psycopg2.connect(database=database, user=user, password=password, host=host, port=port) as conn:
         with conn.cursor() as cur:
-            cur.execute("load 'pg_prewarm'")
+            # Create extension if not exists
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm;")
+                conn.commit()
+            except Exception as e:
+                print(f"Warning: Could not create extension: {e}")
+                conn.rollback()
     
-            sql = \
-            "select pg_prewarm('aka_name', 'buffer', 'main'); \
-                    select pg_prewarm('aka_title', 'buffer', 'main'); \
-                    select pg_prewarm('cast_info', 'buffer', 'main'); \
-                    select pg_prewarm('char_name', 'buffer', 'main'); \
-                    select pg_prewarm('comp_cast_type', 'buffer', 'main'); \
-                    select pg_prewarm('company_name', 'buffer', 'main'); \
-                    select pg_prewarm('company_type', 'buffer', 'main'); \
-                    select pg_prewarm('complete_cast', 'buffer', 'main'); \
-                    select pg_prewarm('info_type', 'buffer', 'main'); \
-                    select pg_prewarm('keyword', 'buffer', 'main'); \
-                    select pg_prewarm('kind_type', 'buffer', 'main'); \
-                    select pg_prewarm('link_type', 'buffer', 'main'); \
-                    select pg_prewarm('movie_companies', 'buffer', 'main'); \
-                    select pg_prewarm('movie_info', 'buffer', 'main'); \
-                    select pg_prewarm('movie_info_idx', 'buffer', 'main'); \
-                    select pg_prewarm('movie_keyword', 'buffer', 'main'); \
-                    select pg_prewarm('movie_link', 'buffer', 'main'); \
-                    select pg_prewarm('name', 'buffer', 'main'); \
-                    select pg_prewarm('person_info', 'buffer', 'main'); \
-                    select pg_prewarm('role_type', 'buffer', 'main'); \
-                    select pg_prewarm('title', 'buffer', 'main'); \
-                    select pg_prewarm('company_id_movie_companies', 'buffer', 'main'); \
-                    select pg_prewarm('company_type_id_movie_companies', 'buffer', 'main'); \
-                    select pg_prewarm('info_type_id_movie_info_idx', 'buffer', 'main'); \
-                    select pg_prewarm('info_type_id_movie_info', 'buffer', 'main'); \
-                    select pg_prewarm('info_type_id_person_info', 'buffer', 'main'); \
-                    select pg_prewarm('keyword_id_movie_keyword', 'buffer', 'main'); \
-                    select pg_prewarm('kind_id_aka_title', 'buffer', 'main'); \
-                    select pg_prewarm('kind_id_title', 'buffer', 'main'); \
-                    select pg_prewarm('linked_movie_id_movie_link', 'buffer', 'main'); \
-                    select pg_prewarm('link_type_id_movie_link', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_aka_title', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_cast_info', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_complete_cast', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_movie_companies', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_movie_info_idx', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_movie_keyword', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_movie_link', 'buffer', 'main'); \
-                    select pg_prewarm('movie_id_movie_info', 'buffer', 'main'); \
-                    select pg_prewarm('person_id_aka_name', 'buffer', 'main'); \
-                    select pg_prewarm('person_id_cast_info', 'buffer', 'main'); \
-                    select pg_prewarm('person_id_person_info', 'buffer', 'main'); \
-                    select pg_prewarm('person_role_id_cast_info', 'buffer', 'main'); \
-                    select pg_prewarm('role_id_cast_info', 'buffer', 'main'); \
-                    select pg_prewarm('aka_name_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('aka_title_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('cast_info_pkey', 'buffer', 'main');  \
-                    select pg_prewarm('char_name_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('comp_cast_type_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('company_name_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('company_type_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('complete_cast_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('info_type_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('keyword_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('kind_type_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('link_type_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('movie_companies_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('movie_info_idx_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('movie_info_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('movie_keyword_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('movie_link_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('name_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('role_type_pkey', 'buffer', 'main'); \
-                    select pg_prewarm('title_pkey', 'buffer', 'main'); \
-            " 
-            cur.execute(sql)
+            # Prewarm main tables
+            tables = [
+                'aka_name', 'aka_title', 'cast_info', 'char_name',
+                'comp_cast_type', 'company_name', 'company_type', 'complete_cast',
+                'info_type', 'keyword', 'kind_type', 'link_type',
+                'movie_companies', 'movie_info', 'movie_info_idx', 'movie_keyword',
+                'movie_link', 'name', 'person_info', 'role_type', 'title'
+            ]
+            
+            for table in tables:
+                try:
+                    cur.execute(f"SELECT pg_prewarm('{table}', 'buffer', 'main');")
+                except Exception as e:
+                    print(f"  Warning: Could not prewarm table {table}: {e}")
+            
+            conn.commit()
             print(f"PostgreSQL Finish PreWarming, total time: {time.time() - start} s")
 
 if __name__ == "__main__":
-    for port in eval(read_config('leon')['other_db_port']) + [int(read_config('PostgreSQL')['Port'])]:
-        print(port)
+    # Get ports safely
+    ports = []
+    
+    # Get other_db_port from leon section
+    other_db_port_str = get_config_value('leon', 'other_db_port', '[]')
+    if other_db_port_str:
+        try:
+            ports.extend(eval(other_db_port_str))
+        except Exception as e:
+            print(f"Error parsing other_db_port: {e}")
+    
+    # Get main PostgreSQL port
+    pg_port = get_config_value('PostgreSQL', 'Port')
+    if pg_port:
+        try:
+            ports.append(int(pg_port))
+        except ValueError:
+            print(f"Invalid port value: {pg_port}")
+    
+    # If no ports found, use default port 5433
+    if not ports:
+        print("No ports found in config, using default port 5433")
+        ports = [5433]
+    
+    print(f"Pre-warming databases on ports: {ports}")
+    for port in ports:
+        print(f"Pre-warming port {port}...")
         prewarm_pg(port)
     

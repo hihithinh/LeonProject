@@ -77,6 +77,20 @@ extern char *deparse_expression_pretty(Node *expr, List *dpcontext,
 									   bool forceprefix, bool showimplicit,
 									   int prettyFlags, int startIndent);
 
+/* Forward declarations */
+static void debug_print_relids(PlannerInfo *root, Relids relids, char **buf, size_t *buf_size);
+static void debug_print_expr(const Node *expr, const List *rtable, char **stream, size_t *buf_size);
+static void debug_escape_json(char **stream, size_t *buf_size, const char *str);
+static void debug_print_joincond(PlannerInfo *root, RelOptInfo *rel, char **stream, size_t *buf_size);
+static List *create_context(PlannerInfo *root);
+static void delete_context(List *context);
+static void debug_print_restrictclauses(PlannerInfo *root, List *clauses, List *context, char **stream, size_t *buf_size);
+static void debug_print_path(PlannerInfo *root, Path *path, int indent, char **stream, size_t *buf_size);
+static char* plan_to_json(LeonState * state, PlannerInfo *root, Path* plan, char* leon_query_name);
+static bool should_leon_optimize(LeonState * state, int level, int levels_needed, PlannerInfo * root, RelOptInfo * rel, char* leon_query_name);
+static int compare_paths(const ListCell *a, const ListCell *b);
+static void sort_savedpaths_by_cost(RelOptInfo *joinrel);
+static void keep_first_50_rels(RelOptInfo *joinrel, int free_size);
 
 static void get_calibrations(double calibrations[], uint32 queryid, int32_t length, int conn_fd, int* picknode_index){
   		// Read the response from the server and store it in the calibrations array
@@ -265,16 +279,15 @@ debug_print_relids(PlannerInfo *root, Relids relids, char **buf, size_t *buf_siz
 	}
 }
 
-void
+static void
 debug_print_joincond(PlannerInfo *root, RelOptInfo *rel, char **stream, size_t *buf_size)
 {
 	ListCell   *lc;
 	List *rtable = root->parse->rtable;
+	bool first = true;
 
 	if (rel->reloptkind != RELOPT_JOINREL)
 		return;
-
-	bool first = true;
 	foreach(lc, root->parse->jointree->quals)
 	{
 		Node *expr = (Node *) lfirst(lc);
@@ -313,7 +326,7 @@ debug_print_joincond(PlannerInfo *root, RelOptInfo *rel, char **stream, size_t *
  * debug_print_expr
  *	  print an expression to a file
  */
-void
+static void
 debug_print_expr(const Node *expr, const List *rtable, char **stream, size_t *buf_size)
 {
 	if (expr == NULL)
@@ -369,12 +382,14 @@ debug_print_expr(const Node *expr, const List *rtable, char **stream, size_t *bu
 			return;
 		}
 
+		char *outputstr_escaped;
+		
 		getTypeOutputInfo(c->consttype,
 						  &typoutput, &typIsVarlena);
 
 		outputstr = OidOutputFunctionCall(typoutput, c->constvalue);
 		// custom_snprintf(stream, buf_size, "\'%s\'", outputstr);
-		char *outputstr_escaped = palloc0(strlen(outputstr) + 3);
+		outputstr_escaped = palloc0(strlen(outputstr) + 3);
 		sprintf(outputstr_escaped, "\'%s\'", outputstr);
 		debug_escape_json(stream, buf_size, outputstr_escaped);
 		pfree(outputstr_escaped);
@@ -430,21 +445,22 @@ debug_print_expr(const Node *expr, const List *rtable, char **stream, size_t *bu
 		custom_snprintf(stream, buf_size, "unknown expr");
 }
 
-List *
+static List *
 create_context(PlannerInfo *root)
 {
 	List *rtable_names = NIL;
+	List *context;
 	ListCell *lc;
 	foreach(lc, root->parse->rtable)
 	{
 		RangeTblEntry *rte = lfirst(lc);
 		rtable_names = lappend(rtable_names, rte->eref->aliasname);
 	}
-	List * context = deparse_context_for_path(root, rtable_names);
+	context = deparse_context_for_path(root, rtable_names);
 	return context;
 }
 
-void 
+static void 
 delete_context(List *context)
 {
 	ListCell *lc;
@@ -460,7 +476,7 @@ delete_context(List *context)
 /*
  * Produce a JSON string literal, properly escaping characters in the text.
  */
-void
+static void
 debug_escape_json(char **stream, size_t *buf_size, const char *str)
 {
 	const char *p;
@@ -507,8 +523,9 @@ debug_print_restrictclauses(PlannerInfo *root, List *clauses, List *context, cha
 	foreach(l, clauses)
 	{
 		RestrictInfo *c = lfirst(l);
+		char * str;
 		// char * str = deparse_expression(c->clause, context, true, false);
-		char * str = deparse_expression_pretty(c->clause, context, true,
+		str = deparse_expression_pretty((Node *)c->clause, context, true,
 									 false, 0, 0);
         debug_escape_json(stream, buf_size, str);
 		// custom_snprintf(stream, buf_size, "%s", str);
@@ -700,12 +717,12 @@ debug_print_path(PlannerInfo *root, Path *path, int indent, char **stream, size_
 	custom_snprintf(stream, buf_size, "\"Node Type ID\": \"%d\",", path->type);
 	if (path->parent)
 	{
+		List *context = NIL;
 		custom_snprintf(stream, buf_size, "\"Relation IDs\": \"");
 		debug_print_relids(root, path->parent->relids, stream, buf_size);
 		custom_snprintf(stream, buf_size, "\",");
 
 		// Get context
-		List *context = NIL;
 
 		if (path->parent->baserestrictinfo)
 		{	
@@ -740,14 +757,15 @@ debug_print_path(PlannerInfo *root, Path *path, int indent, char **stream, size_
 	}
 	if (path->pathtarget)
 	{	
-		custom_snprintf(stream, buf_size, "\"Path Target\": \"");
 		PathTarget *pathtarget = path->pathtarget;
         ListCell *lc_expr;
 		bool first = true;
+		Node *expr;
+		custom_snprintf(stream, buf_size, "\"Path Target\": \"");
         foreach(lc_expr, pathtarget->exprs) {
 			if (!first)
 				custom_snprintf(stream, buf_size, ", ");
-            Node *expr = (Node *) lfirst(lc_expr);
+            expr = (Node *) lfirst(lc_expr);
             debug_print_expr(expr, root->parse->rtable, stream, buf_size);
 			first = false;
         }
@@ -804,10 +822,13 @@ debug_print_path(PlannerInfo *root, Path *path, int indent, char **stream, size_
 }
 
 static char* plan_to_json(LeonState * state, PlannerInfo *root, Path* plan, char* leon_query_name) {
+	MemoryContext oldContext;
+    size_t buf_size;
+    char *buf;
 
-	MemoryContext oldContext = MemoryContextSwitchTo(state->leonContext);
-    size_t buf_size = 1024;
-    char *buf = (char *) palloc0(buf_size);
+	oldContext = MemoryContextSwitchTo(state->leonContext);
+    buf_size = 1024;
+    buf = (char *) palloc0(buf_size);
 
     custom_snprintf(&buf, &buf_size, "{\"QueryId\": \"%s\", \"Plan\": ", leon_query_name);
     debug_print_path(root, plan, 0, &buf, &buf_size); 
@@ -819,19 +840,25 @@ static char* plan_to_json(LeonState * state, PlannerInfo *root, Path* plan, char
 
 
 static bool should_leon_optimize(LeonState * state, int level, int levels_needed, PlannerInfo * root, RelOptInfo * rel, char* leon_query_name) {
+	bool should_optimize;
+	MemoryContext oldContext;
+	int conn_fd;
+	size_t buf_size;
+	char *buf;
+	char *response;
 
-	bool should_optimize = false;
-	MemoryContext oldContext = MemoryContextSwitchTo(state->leonContext);
+	should_optimize = false;
+	oldContext = MemoryContextSwitchTo(state->leonContext);
 
-	int conn_fd = connect_to_leon(state->leon_host, state->leon_port);
+	conn_fd = connect_to_leon(state->leon_host, state->leon_port);
 	if (conn_fd < 0) {
 		elog(WARNING, "Unable to connect to LEON server %d, should optimize will be cancelled", state->leon_port);
 		exit(0);
 	}
 	write_all_to_socket(conn_fd, START_SHOULD_OPT_MESSAGE);
 
-	size_t buf_size = 1024;
-	char *buf = (char *) palloc0(buf_size);
+	buf_size = 1024;
+	buf = (char *) palloc0(buf_size);
 
 	custom_snprintf(&buf, &buf_size, "{\"QueryId\": \"%s\", \"Relation IDs\": \"", leon_query_name);
 	debug_print_relids(root, rel->relids, &buf, &buf_size);
@@ -846,7 +873,7 @@ static bool should_leon_optimize(LeonState * state, int level, int levels_needed
 	write_all_to_socket(conn_fd, TERMINAL_MESSAGE);
 	shutdown(conn_fd, SHUT_WR);
 
-	char *response = (char *)palloc0(5 * sizeof(char));
+	response = (char *)palloc0(5 * sizeof(char));
 
 	if (read(conn_fd, response, 5) > 0) 
 	{
@@ -883,10 +910,10 @@ cleanup:
 	return should_optimize;
 }
 
-static int compare_paths(const void *a, const void *b)
+static int compare_paths(const ListCell *a, const ListCell *b)
 {
-    Path *path_a = *(Path **)a;
-    Path *path_b = *(Path **)b;
+    Path *path_a = (Path *) lfirst(a);
+    Path *path_b = (Path *) lfirst(b);
 
     // 根据路径的 cost 进行比较
     if (path_a->total_cost < path_b->total_cost)
@@ -898,7 +925,7 @@ static int compare_paths(const void *a, const void *b)
 }
 
 // 对 savedpaths 列表按照 cost 进行排序
-void sort_savedpaths_by_cost(RelOptInfo *joinrel)
+static void sort_savedpaths_by_cost(RelOptInfo *joinrel)
 {
     if (joinrel->savedpaths != NIL)
     {
@@ -906,7 +933,7 @@ void sort_savedpaths_by_cost(RelOptInfo *joinrel)
     }
 }
 
-void keep_first_50_rels(RelOptInfo *joinrel, int free_size)
+static void keep_first_50_rels(RelOptInfo *joinrel, int free_size)
 {
     if (joinrel->savedpaths != NIL)
     {

@@ -4,6 +4,7 @@ import pytorch_lightning.callbacks as plc
 import torch.nn.functional as F
 import torch.nn as nn
 from leon_experience import TIME_OUT
+# Note: wandb logging is handled by main trainer loop (leon_trainer.py)
 
 class PL_Leon(pl.LightningModule):
     def __init__(self, model, optimizer_state_dict=None, learning_rate=0.001):
@@ -73,6 +74,7 @@ class PL_Leon(pl.LightningModule):
     def training_step(self, batch):
         loss, acc = self.getBatchPairsLoss(batch)
         self.log_dict({'train_loss': loss, 'train_acc': acc}, on_epoch=True)
+        # Note: wandb logging handled by main trainer loop (leon_trainer.py)
         return loss
 
     def validation_step(self, batch):
@@ -80,6 +82,7 @@ class PL_Leon(pl.LightningModule):
             return self.__validation_step_impl(batch)
         loss, acc = self.getBatchPairsLoss(batch)
         self.log_dict({'val_loss': loss, 'val_acc': acc}, on_epoch=True)
+        # Note: wandb logging handled by main trainer loop (leon_trainer.py)
         return loss
     
     def test_step(self, batch):
@@ -177,6 +180,13 @@ class PL_Leon(pl.LightningModule):
         accuracy /= total
         loss /= total
         self.log_dict({'test_acc': accuracy, 'test_loss': loss}, on_epoch=True)
+        
+        # Log to wandb
+        wandb.log({
+            'test_acc': accuracy,
+            'test_loss': loss.item() if hasattr(loss, 'item') else loss,
+            'epoch': self.current_epoch
+        })
 
         # clear outputs
         self.outputs.clear()

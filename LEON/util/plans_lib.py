@@ -1018,18 +1018,22 @@ class QueryFeaturizer(Featurizer):
             self.table_id_to_alias(table)
             for table in self.workload_info.rel_ids
         ]
-        adj_matrix = nx.to_numpy_array(query_join_graph, nodelist=all_aliases)
-        # adj_matrix = np.zeros((len(all_aliases), len(all_aliases)), dtype=int)
-
-        # # 遍历连接图的边，将邻接矩阵中对应位置的值设为1
-        # for u, v in query_join_graph.edges():
-        #     u_idx = all_aliases.index(u)
-        #     v_idx = all_aliases.index(v)
-        #     adj_matrix[u_idx, v_idx] = 1
-        #     adj_matrix[v_idx, u_idx] = 1
-        # # Sufficient to grab the upper-triangular portion (since graph is
-        # # undirected).  k=1 means don't grab the diagnoal (all 1s).
-        # print(adj_matrix)
+        
+        # Build adjacency matrix with all aliases (pad with 0 for unused tables)
+        # This ensures consistent feature dimension across all queries
+        adj_matrix = np.zeros((len(all_aliases), len(all_aliases)), dtype=float)
+        
+        # Fill in edges for tables that exist in the query graph
+        graph_nodes = set(query_join_graph.nodes())
+        for u, v in query_join_graph.edges():
+            if u in all_aliases and v in all_aliases:
+                u_idx = all_aliases.index(u)
+                v_idx = all_aliases.index(v)
+                adj_matrix[u_idx, v_idx] = 1
+                adj_matrix[v_idx, u_idx] = 1
+        
+        # Sufficient to grab the upper-triangular portion (since graph is undirected)
+        # k=1 means don't grab the diagonal (all 1s)
         triu = adj_matrix[np.triu_indices(len(all_aliases),
                                           k=1)].astype(np.float32)
 
@@ -1037,4 +1041,9 @@ class QueryFeaturizer(Featurizer):
         return features
     
     def Dim(self):
-        return int(len(self.workload_info.rel_ids) * (len(self.workload_info.rel_ids) - 1) / 2 + len(self.workload_info.rel_ids))
+        # Return dimension based on actual workload tables
+        # This matches the feature size: triu (upper triangular) + vec (table features)
+        n_tables = len(self.workload_info.rel_ids)
+        triu_size = int(n_tables * (n_tables - 1) / 2)
+        vec_size = n_tables
+        return triu_size + vec_size

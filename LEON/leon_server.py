@@ -435,19 +435,28 @@ class JSONTCPHandler(socketserver.BaseRequestHandler):
                 str_buf = str_buf[null_loc + 1:]
                 if json_msg:
                     try:    
-                        def fix_json_msg(json):
+                        def fix_json_msg(json_str):
+                            # Fix 1: Remove quotes inside ANY/ALL patterns
                             pattern = r'(ANY|ALL) \((.*?):text\[\]\)'
-                            matches = re.findall(pattern, json)
+                            matches = re.findall(pattern, json_str)
                             for _, match in matches:
                                 extracted_string = match
                                 cleaned_string = extracted_string.replace('"', '')
-                                json = json.replace(extracted_string, cleaned_string)
-                            return json
+                                json_str = json_str.replace(extracted_string, cleaned_string)
+                            
+                            # Fix 2: Fix escaped backslashes in strings
+                            # Replace \\RAT with \RAT, \\, with \, etc.
+                            # But be careful not to break valid JSON escapes
+                            json_str = json_str.replace('\\\\', '\\')
+                            
+                            return json_str
+                        
                         json_msg = fix_json_msg(json_msg)
                         if self.handle_json(json.loads(json_msg)):
                             break
-                    except json.decoder.JSONDecodeError:
-                        print("Error decoding JSON:", repr(json_msg))
+                    except json.decoder.JSONDecodeError as e:
+                        print(f"Error decoding JSON: {repr(json_msg)}")
+                        print(f"  Details: {e}")
                         self.handle_json([])
                         break
 

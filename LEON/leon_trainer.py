@@ -25,11 +25,75 @@ from models.Transformer import *
 from models.DNN import *
 import gc
 from collections import namedtuple
+import wandb
+import logging
+from datetime import datetime
 
 ExecPlan = namedtuple('ExecPlan', 
                       ['plan', 'timeout', 'eq_set', 'cost'])
 
-DEVICE = 'cpu'
+# ===== PROGRESS LOGGING SETUP =====
+class ProgressLogger:
+    """Log progress to both terminal and wandb"""
+    def __init__(self, name="LEON2"):
+        self.name = name
+        # Setup logging
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging.INFO)
+        
+        # Console handler
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - [%(levelname)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        ch.setFormatter(formatter)
+        self.logger.addHandler(ch)
+    
+    def log(self, message, level="INFO", log_to_wandb=True):
+        """Log to terminal and optionally to wandb"""
+        if level == "INFO":
+            self.logger.info(message)
+        elif level == "WARNING":
+            self.logger.warning(message)
+        elif level == "ERROR":
+            self.logger.error(message)
+        elif level == "DEBUG":
+            self.logger.debug(message)
+        
+        # Log to wandb
+        if log_to_wandb:
+            try:
+                wandb.log({"progress": message})
+            except:
+                pass
+    
+    def log_progress(self, iteration, total, prefix="", suffix=""):
+        """Log training progress with percentage"""
+        percent = (iteration / total) * 100
+        message = f"{prefix} [{iteration}/{total}] {percent:.1f}% {suffix}"
+        self.log(message, log_to_wandb=True)
+        
+        # Also log to wandb as metric
+        try:
+            wandb.log({"training_progress_percent": percent})
+        except:
+            pass
+
+progress_logger = ProgressLogger("LEON2")
+
+# Auto-detect device: MPS (Mac M1/M2/M3) > CUDA > CPU
+if torch.backends.mps.is_available():
+    DEVICE = 'mps'
+    print("🚀 Using Metal Performance Shaders (MPS) on Mac M1/M2/M3")
+elif torch.cuda.is_available():
+    DEVICE = 'cuda'
+    print("🚀 Using CUDA GPU")
+else:
+    DEVICE = 'cpu'
+    print("⚠️  Using CPU (slow training)")
+
 conf = read_config()
 model_type = conf['leon']['model_type']
 
@@ -370,6 +434,55 @@ def Subsitution(leon_nodes, all_nodes, Exp: Experience):
                 break
 
 if __name__ == '__main__':
+    # Initialize Weights & Biases for ML logging
+    print("\n" + "="*60)
+    print("🚀 LEON 2 Training with GPU Acceleration & wandb Logging")
+    print("="*60)
+    print(f"Device: {DEVICE}")
+    print("="*60 + "\n")
+    
+    # Disable PyTorch Lightning's wandb logger to avoid conflicts
+    os.environ["WANDB_DISABLED"] = "false"  # But keep wandb enabled for our custom logging
+    
+    # Finish any existing wandb runs (with timeout)
+    try:
+        if wandb.run is not None:
+            wandb.finish(quiet=True)
+    except Exception as e:
+        print(f"⚠️  Could not finish old wandb run: {e}")
+    
+    # Initialize wandb with error handling
+    wandb_project = conf['leon']['wandb_project']
+    try:
+        wandb.init(
+            project=wandb_project,
+            name=f"LEON2-{time.strftime('%Y%m%d_%H%M%S')}",
+            config={
+                "device": DEVICE,
+                "model_type": model_type,
+                "learning_rate": 0.001,
+                "chunk_size": 6,
+                "min_batch_size": 256,
+                "framework": "Custom (no PyTorch Lightning logger)",
+                "workload": conf['leon']['workload_type']
+            },
+            tags=["LEON2", "GPU", "production"],
+            notes="Training with MPS GPU acceleration on Mac M1"
+        )
+        print(f"✅ wandb initialized: {wandb.run.name}")
+    except Exception as e:
+        print(f"⚠️  wandb init failed: {e}")
+        print("   Continuing without wandb logging...")
+    
+    # Log startup info
+    progress_logger.log(f"✅ Training started with device: {DEVICE}", log_to_wandb=True)
+    progress_logger.log(f"📊 Logging to wandb project: {wandb_project}", log_to_wandb=True)
+    
+    # Debug: Check wandb status
+    print(f"\n📊 wandb.run: {wandb.run}")
+    print(f"📊 wandb.run.name: {wandb.run.name if wandb.run else 'None'}")
+    print(f"📊 wandb.run.project: {wandb.run.project if wandb.run else 'None'}\n")
+    
     file_path = ["./log/messages.pkl", './log/model.pth', './log/dnn_model.pth']
     for file_path1 in file_path:
         if os.path.exists(file_path1):
@@ -437,12 +550,70 @@ if __name__ == '__main__':
     first_time = dict()
     last_train_pair = 0
     max_query_latency1 = 0
-    logger =  pl_loggers.WandbLogger(
-        save_dir=os.getcwd() + '/logs', 
-        name=f"LEON_{conf['leon']['workload_type']}", 
-        project=conf['leon']['wandb_project'])
-    for key in conf:
-        logger.log_hyperparams(conf[key])
+    
+    # Centralized wandb logging wrapper
+    # All ML metrics logged here: query latency, training loss/acc, etc.
+    class WandbLoggerWrapper:
+        """Centralized wrapper for all wandb logging"""
+        def __init__(self):
+            self.step_counter = 0
+            self.epoch_counter = 0
+            self.experiment = type('obj', (object,), {'dir': './logs'})()  # For PyTorch Lightning compatibility
+        
+        def log_metrics(self, metrics, step=None):
+            """Log metrics to wandb with step and epoch"""
+            try:
+                if wandb.run is None:
+                    print(f"❌ wandb.run is None! Cannot log metrics: {list(metrics.keys())}")
+                    return
+                
+                log_dict = dict(metrics)
+                
+                # Add step
+                if step is not None:
+                    log_dict['step'] = step
+                    self.step_counter = step
+                else:
+                    log_dict['step'] = self.step_counter
+                
+                # Add epoch
+                log_dict['epoch'] = self.epoch_counter
+                
+                # Debug: Print first few logs
+                if self.step_counter < 3:
+                    print(f"✅ wandb.log: {list(log_dict.keys())} (step={log_dict['step']}, epoch={log_dict['epoch']})")
+                
+                wandb.log(log_dict)
+            except Exception as e:
+                print(f"❌ wandb log_metrics error: {e}")
+        
+        def log_hyperparams(self, params):
+            """Log hyperparameters to wandb config"""
+            try:
+                if wandb.run is None:
+                    return
+                if isinstance(params, dict):
+                    wandb.config.update(params)
+            except Exception as e:
+                print(f"⚠️  wandb log_hyperparams error: {e}")
+        
+        def increment_epoch(self):
+            """Increment epoch counter"""
+            self.epoch_counter += 1
+        
+        def log_training_metrics(self, train_loss, train_acc, val_loss=None, val_acc=None, step=None):
+            """Log ML training metrics (loss, accuracy)"""
+            metrics = {
+                'train_loss': train_loss,
+                'train_acc': train_acc
+            }
+            if val_loss is not None:
+                metrics['val_loss'] = val_loss
+            if val_acc is not None:
+                metrics['val_acc'] = val_acc
+            self.log_metrics(metrics, step=step)
+    
+    logger = WandbLoggerWrapper()  # Centralized logging
     my_step = 0
     same_actor = ray.get_actor('leon_server')
     task_counter = ray.get_actor('counter')
@@ -490,10 +661,16 @@ if __name__ == '__main__':
             time_ratio.append(query_latency2 / query_latency1)
             tf_time.append(query_latency2)
             pg_time1.append(query_latency1)
-            logger.log_metrics(
-                {f"Query/{curr_file[q_send_cnt]}pg_latency": query_latency1}, step=my_step)
-            logger.log_metrics(
-                {f"Query/{curr_file[q_send_cnt]}leon_latency": query_latency2}, step=my_step)
+            # Log to wandb (custom logging, not PyTorch Lightning)
+            try:
+                if wandb.run is not None:
+                    wandb.log({
+                        f"Query/{curr_file[q_send_cnt]}/pg_latency": query_latency1,
+                        f"Query/{curr_file[q_send_cnt]}/leon_latency": query_latency2,
+                        "step": my_step
+                    })
+            except Exception as e:
+                print(f"⚠️  wandb log error: {e}")
             if curr_file[q_send_cnt] not in first_time:
                 first_time[curr_file[q_send_cnt]] = query_latency1 # 第一次pgtime
         
@@ -737,8 +914,12 @@ if __name__ == '__main__':
                                             check_on_train_epoch_end=False,
                                             verbose=True
                                         )],
-                                logger=None)
+                                logger=False)  # Disable PyTorch Lightning logger (use custom wandb)
+            
+            # Log DNN training start
+            logger.log_metrics({"DNN_training_start": 1}, step=my_step)
             trainer.fit(dnn_model, dataloader_train, dataloader_val)
+            logger.log_metrics({"DNN_training_end": 1}, step=my_step)
             del leon_dataset, train_ds, val_ds, dataloader_train, dataloader_val
 
         if len(train_pairs) > min_batch_size:
